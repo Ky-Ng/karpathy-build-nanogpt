@@ -174,7 +174,7 @@ class GPT(nn.Module):
         # Language head at the end
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
 
         # (B, T) batch size and token size
         B, T = idx.size()
@@ -192,9 +192,12 @@ class GPT(nn.Module):
 
         # Run the final encoder's hidden representation through the layer norm and Language Head
         x = self.transformer.ln_f(x)
-        logits = self.lm_head(x)
+        logits = self.lm_head(x) # Shape B,T,vocab_size
 
-        # Shape B,T,vocab_size
+        if targets is not None:
+            # Flatten by (1) fixing the logits into (B*T, vocab_size) and (B*T)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            return logits, loss
         return logits
 
     # Initialization code from Karpathy repo to test validity of our version
@@ -259,14 +262,14 @@ class GPT(nn.Module):
 
         return model
 
-
+# Training
 # model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
 device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
+# if torch.cuda.is_available():
+#     device = "cuda"
+# elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+#     device = "mps"
 print(f"Using device {device}")
 
 model.eval()
@@ -275,6 +278,33 @@ model.to(device)
 # TODO Review and understand more deeply
 num_return_seq = 5
 enc = tiktoken.get_encoding("gpt2")
+
+# Tokenize the first 1000 characters from shakespeare
+with open("input.txt", "r") as f:
+    text = f.read()
+text = text[:1000]
+
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1])
+x = buf[:-1].view(B,T).to(device)
+y = buf[1:].view(B,T).to(device)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+num_epochs = 50
+for i in range(num_epochs):
+    optimizer.zero_grad()
+    logits, loss = model(x,y)
+    loss.backward() # Accumulates gradients
+    optimizer.step() # updates params
+
+    # Loss is a single 1D tensor, item() moves back to CPU
+    print(f"step {i}, loss: {loss.item()}")
+
+logits, loss = model(x,y)
+print(loss)
+
+# Inference
 tokens = enc.encode("Hello I am a language model, ")
 tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(num_return_seq, 1)  # (5xT)
